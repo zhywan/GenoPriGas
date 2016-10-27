@@ -21,7 +21,6 @@ tic
 
 %--Sensitivity analysis on the expected cost of penalty to the adversary--%
 
-
 % % Game Configuration
 Homer_Attack=0; % 1=Homer's attack; 0=Jordan's attack (default)
 relax2=0; % 1=Adversary only use released independent SNPs; 0=Adversry use all released SNPs (default)
@@ -73,6 +72,7 @@ rMark=~pMark;%mark the individuals in reference
 n_pool=sum(pMark);%calculate the # of individuals in pool
 n_pop=length(pMark);%calculate the total # of individuals
 
+% % % Filtering
 % % Handling missing values
 MissingSNP=sum(Pool==-1);%A vector, in which each element is # of individuals in pool with missing values for a SNP
 RetainedSNP=MissingSNP<=n_pool*theta_miss;%A binary vector, in which each element indicates a SNP will be retained or not
@@ -82,8 +82,8 @@ Ref=Ref(:,RetainedSNP);%Discard all the SNPs that should not be retained from th
 RetainedID=RetainedID(RetainedSNP);%Record the IDs of those retained SNPs
 
 % % Compute MAF
-MissPool=(Pool==-1);%A binary matrix, in which each element indicates a SNP for an individual in pool is missed or not
-MissRef=(Ref==-1);%A binary matrix, in which each element indicates a SNP for an individual in reference is missed or not
+MissPool=(Pool==-1);%A binary matrix, in which each element indicates a SNP for an individual in pool is missing or not
+MissRef=(Ref==-1);%A binary matrix, in which each element indicates a SNP for an individual in reference is missing or not
 Poolfreq=sum(Pool+MissPool)/2./sum(1-MissPool);%Vector of MAFs in the pool
 Reffreq=sum(Ref+MissRef)/2./sum(1-MissRef);%Vector of MAFs in the reference
 if N_Class==1 % LR test: in pool or in population (can not tell)
@@ -100,9 +100,98 @@ Reject=Poolfreq<mafcutoff|Poolfreq>(1-mafcutoff);%Mark those SNPs with too small
 
 % Retain SNPs
 RetainedPool=Pool(:,~Reject);% Discard SNPs with too small MAF from the pool
-m=size(RetainedPool,2);% the # of SNPs in the new pool
+m=size(RetainedPool,2);% # of SNPs in the new pool
 RetainedScore=Score(~Reject);% Discard SNPs with too small MAF in the utilty weight vector
 RetainedRef=Ref(:,~Reject);% Discard SNPs with too small MAF freom the reference
 RetainedPoolfreq=Poolfreq(:,~Reject);% Discard SNPs with too small MAF from the poof MAF vector
 RetainedReffreq=Reffreq(:,~Reject);% Discard SNPs with too small MAF from the reference MAF vector
 RetainedID=RetainedID(~Reject);%Record the IDs of remaining SNPs
+
+% % Sort rank
+[sortedscore,sortedindex]=sort(RetainedScore,'descend');%Sort SNPs according to their utility weight in a descending order
+SortedPool=RetainedPool(:,sortedindex);%Adjust the order of SNPs in the pool accordingly
+SortedRef=RetainedRef(:,sortedindex);%Adjust the order of SNPs in the reference accordingly
+SortedPoolfreq=RetainedPoolfreq(:,sortedindex);%Adjust the order of SNPs in the pool-MAF vector accordingly
+SortedReffreq=RetainedReffreq(:,sortedindex);%Adjust the order of SNPs in the reference-MAF vector accordingly
+SortedID=RetainedID(sortedindex);%Adjust the IDs of remaining SNPs accordingly
+
+% % Compute the correlation matrix
+AbnormalRef=(SortedRef==-1);%A binary matrix, each element indicates a SNP for an individual in reference is missing or not
+AdRef=SortedRef;%Create a copy of the reference dataset
+AdRef(logical(AbnormalRef))=NaN;%Change the way to mark missing values in the reference dataset 
+%[RHO, PVAL] = chi2p(AdRef,3);%Pearson's chi-squared test for a matrix.
+% Because this step is very time-comsuming, we pre computed correlation matrix below
+load('Sphinx/RHO+PVAL_chi2p_noNaN')% Load the pre-computed correlation matrix
+BB_PVAL=(PVAL+PVAL')<ldcutoff;% If correlation coefficient is smaller than a threshold ldcutoff, regard as correlated
+BB=BB_PVAL-eye(m);% BB_ij is 1 if SNP i and SNP j is correlated and not the same SNP
+
+% % Exclude the SNP outliers
+Selection= true(1,m); % Initialize a Selection vector
+n_drop=sum(sortedscore>(6*std(Poolfreq-Reffreq))); % Compute the number of SNPs that are outliers 
+       %(i.e. SNPs with too larger utility weight) Normal Distribution within 6 sigma Specification Limits
+Selection(1:n_drop)=false; % Drop those SNPs
+
+% % Select a subset of independent published SNPs for the publisher
+for iii=1:(m-1) %for each SNPs except the last one
+    if Selection(iii)==false % if the SNP has already marked as "no selection"
+        continue
+    end
+    Selection(iii:m)=Selection(iii:m) & not(BB(iii,iii:m));% Mark all SNPs that are correlated with current SNP as "no selection"
+end
+
+SelectSortedPool=SortedPool(:,Selection);% Trim the pool according to the Selection vector
+SelectSortedRef=SortedRef(:,Selection);% Trim the reference according to the Selection vector
+m=size(SelectSortedPool,2) %  # of SNPs in the new pool
+SelectSortedPoolfreq=SortedPoolfreq(:,Selection);% Trim the pool-MAF vector according to the Selection vector
+SelectSortedReffreq=SortedReffreq(:,Selection);% Trim the reference-MAF vector according to the Selection vector
+poolfreq=SelectSortedPoolfreq;% Rename (Create a copy of) the pool-MAF
+nonpoolfreq=SelectSortedReffreq;% Rename (Create a copy of) the reference-MAF
+SelectSortedID=SortedID(Selection);% Adjust the IDs of remaining SNPs accordingly
+selectsortedscore=sortedscore(Selection); % Trim the utility weight vector according to the Selection vector
+utility=selectsortedscore;% Rename (Create a copy of) the utility weight vector
+sum_utility=sum(utility);% Compute the sum of the utility weight vector
+
+% % % Game Configuration (part 2) - regarding the target set
+select_rate=N_T*sample_rate/n_pool;% Calculate the selection rete in the pool
+select_rate_ref=N_T*(1-sample_rate)/(n_pop-n_pool);% Calculate the selection rete in the reference
+U=N_T*0.05*L*U_factor;% Set (or Calculate) the worth of the data to the data sharer (i.e., his or her maximal benefit)
+
+% % Create the target set
+ptID=1:n_pool; %Targets include all individuals in the pool
+n=length(ptID); % # of targets in pool
+Pool=Pop(ptID,SelectSortedID);% Targets in pool
+nptID=(n_pool+1):n_pop; %Targets include all individuals in the reference
+n_ref=length(nptID); % # of targets in reference
+Ref=Pop(nptID,SelectSortedID);% Targets in reference
+
+% % % Compute LR statistics
+lralternate = zeros(n,m); % Initialize the LR statistics in the pool
+lralternate_ref = zeros(n_ref,m); % Initialize the LR statistics in the reference
+for j = 1:m %j-th SNP
+    for i=1:n %i-th individual in pool
+        alternatepoolfreq = poolfreq(j); %MAF in pool
+        alternatereffreq = nonpoolfreq(j);%MAF in reference
+        lralternate(i,j) = singlesnplr (Pool(i,j), alternatepoolfreq, alternatereffreq);%Calculate the LR statistic
+    end
+    for i=1:n_ref %for the individuals not in the pool
+        alternatepoolfreq = poolfreq(j); %MAF in pool
+        alternatereffreq = nonpoolfreq(j);%MAF in reference
+        lralternate_ref(i,j) = singlesnplr (Ref(i,j), alternatepoolfreq, alternatereffreq);%Calculate the LR statistic
+    end
+end
+lralternate=lralternate';% Transpose
+lralternate_ref=lralternate_ref';% Transpose
+
+% % % Start of the Sensitivity analysis % % %
+    
+% Initialization or recording vectors (or matrix)
+A1=[];% Publisher's payoff (Publisher=Sharer)
+A2=[];% # of released SNPs
+A4=[];% true positive count
+A5=[];% false positive count
+A8=[];% Adversary's payoff (Adversary=Recipient)
+A9=[];% Adversary's estimated payoff
+A10=[];% Publisher's benefit
+A11=[];% Publisher's cost
+AA=[];% Publisher's strategy
+%Loop
