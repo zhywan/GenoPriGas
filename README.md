@@ -1,5 +1,5 @@
 # GenoPriGas
-Strategic Genomic Privacy Game Solver (GenoPriGas) or One-Stage Membership Inference Game (OSMIG)
+Strategic Genomic Privacy Game Solver (GenoPriGas) or One-Stage Membership Inference Game (OSMIG) Solver
 
 Description:
 
